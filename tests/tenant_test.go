@@ -1,218 +1,108 @@
 package tests
 
 import (
-	"context"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"testing"
 
-	"github.com/mwangaben/permission/models"
-	"github.com/mwangaben/permission/tenant"
+	"github.com/mwangaben/permission/config"
+	"github.com/mwangaben/permission/permission"
+	"github.com/mwangaben/permission/role"
+	"gorm.io/gorm"
 )
 
 func TestTenant(t *testing.T) {
-	db := SetupTestDB(t)
-	defer CleanupTestDB(db)
-
-	db.AutoMigrate(&models.Tenant{})
-
-	db.Exec(`CREATE TABLE IF NOT EXISTS tenant_user (
-		user_id VARCHAR(100),
-		tenant_id VARCHAR(100)
-	)`)
-
-	resolver := tenant.NewResolver(db)
-
-	t.Run("Create tenant", func(t *testing.T) {
-		tenantObj, err := resolver.CreateTenant(
-			"Test Organization",
-			"test-org",
-			"test.example.com",
-			"user-1",
-		)
-		if err != nil {
-			t.Fatalf("Failed to create tenant: %v", err)
-		}
-
-		if tenantObj.Name != "Test Organization" {
-			t.Errorf("Expected name 'Test Organization', got '%s'", tenantObj.Name)
-		}
-		if tenantObj.Slug != "test-org" {
-			t.Errorf("Expected slug 'test-org', got '%s'", tenantObj.Slug)
-		}
-		if tenantObj.Domain != "test.example.com" {
-			t.Errorf("Expected domain 'test.example.com', got '%s'", tenantObj.Domain)
-		}
-		if tenantObj.OwnerID != "user-1" {
-			t.Errorf("Expected owner ID 'user-1', got '%s'", tenantObj.OwnerID)
-		}
-	})
-
-	t.Run("Resolve tenant by slug", func(t *testing.T) {
-		tenantObj, err := resolver.CreateTenant(
-			"Resolve Test",
-			"resolve-test",
-			"resolve.example.com",
-			"user-2",
-		)
-		if err != nil {
-			t.Fatalf("Failed to create tenant: %v", err)
-		}
-
-		resolved, err := resolver.ResolveTenantBySlug("resolve-test")
-		if err != nil {
-			t.Fatalf("Failed to resolve tenant: %v", err)
-		}
-
-		if resolved.ID != tenantObj.ID {
-			t.Errorf("Expected tenant ID %s, got %s", tenantObj.ID, resolved.ID)
-		}
-	})
-
-	t.Run("Resolve tenant by domain", func(t *testing.T) {
-		tenantObj, err := resolver.CreateTenant(
-			"Domain Test",
-			"domain-test",
-			"domain.example.com",
-			"user-3",
-		)
-		if err != nil {
-			t.Fatalf("Failed to create tenant: %v", err)
-		}
-
-		resolved, err := resolver.ResolveTenantByDomain("domain.example.com")
-		if err != nil {
-			t.Fatalf("Failed to resolve tenant by domain: %v", err)
-		}
-
-		if resolved.ID != tenantObj.ID {
-			t.Errorf("Expected tenant ID %s, got %s", tenantObj.ID, resolved.ID)
-		}
-	})
-
-	t.Run("Resolve tenant from context", func(t *testing.T) {
-		tenantObj, err := resolver.CreateTenant(
-			"Context Test",
-			"context-test",
-			"context.example.com",
-			"user-4",
-		)
-		if err != nil {
-			t.Fatalf("Failed to create tenant: %v", err)
-		}
-
-		ctx := context.WithValue(context.Background(), "tenant_id", tenantObj.ID)
-		resolved, err := resolver.ResolveTenant(ctx)
-		if err != nil {
-			t.Fatalf("Failed to resolve tenant from context: %v", err)
-		}
-
-		if resolved.ID != tenantObj.ID {
-			t.Errorf("Expected tenant ID %s, got %s", tenantObj.ID, resolved.ID)
-		}
-	})
-
-	t.Run("Add user to tenant", func(t *testing.T) {
-		tenantObj, err := resolver.CreateTenant(
-			"Add User Test",
-			"add-user-test",
-			"adduser.example.com",
-			"user-5",
-		)
-		if err != nil {
-			t.Fatalf("Failed to create tenant: %v", err)
-		}
-
-		err = resolver.AddUserToTenant("user-6", tenantObj.ID)
-		if err != nil {
-			t.Fatalf("Failed to add user to tenant: %v", err)
-		}
-
-		var count int64
-		db.Table("tenant_user").Where("user_id = ? AND tenant_id = ?", "user-6", tenantObj.ID).Count(&count)
-		if count == 0 {
-			t.Error("User was not added to tenant")
-		}
-	})
-
-	t.Run("Remove user from tenant", func(t *testing.T) {
-		tenantObj, err := resolver.CreateTenant(
-			"Remove User Test",
-			"remove-user-test",
-			"removeuser.example.com",
-			"user-7",
-		)
-		if err != nil {
-			t.Fatalf("Failed to create tenant: %v", err)
-		}
-
-		resolver.AddUserToTenant("user-8", tenantObj.ID)
-
-		err = resolver.RemoveUserFromTenant("user-8", tenantObj.ID)
-		if err != nil {
-			t.Fatalf("Failed to remove user from tenant: %v", err)
-		}
-
-		var count int64
-		db.Table("tenant_user").Where("user_id = ? AND tenant_id = ?", "user-8", tenantObj.ID).Count(&count)
-		if count > 0 {
-			t.Error("User was not removed from tenant")
-		}
-	})
-
-	t.Run("Get tenant users", func(t *testing.T) {
-		tenantObj, err := resolver.CreateTenant(
-			"Get Users Test",
-			"get-users-test",
-			"getusers.example.com",
-			"user-9",
-		)
-		if err != nil {
-			t.Fatalf("Failed to create tenant: %v", err)
-		}
-
-		users := []string{"user-10", "user-11", "user-12"}
-		for _, userID := range users {
-			resolver.AddUserToTenant(userID, tenantObj.ID)
-		}
-
-		userIDs, err := resolver.GetTenantUsers(tenantObj.ID)
-		if err != nil {
-			t.Fatalf("Failed to get tenant users: %v", err)
-		}
-
-		if len(userIDs) < 3 {
-			t.Errorf("Expected at least 3 users, got %d", len(userIDs))
-		}
-	})
-
-	t.Run("Get user tenants", func(t *testing.T) {
-		tenants := []struct {
-			name string
-			slug string
-		}{
-			{"User Tenant 1", "user-tenant-1"},
-			{"User Tenant 2", "user-tenant-2"},
-		}
-
-		for _, tData := range tenants {
-			tenantObj, err := resolver.CreateTenant(
-				tData.name,
-				tData.slug,
-				tData.slug+".example.com",
-				"user-13",
-			)
-			if err != nil {
-				t.Fatalf("Failed to create tenant: %v", err)
-			}
-			resolver.AddUserToTenant("user-13", tenantObj.ID)
-		}
-
-		userTenants, err := resolver.GetUserTenants("user-13")
-		if err != nil {
-			t.Fatalf("Failed to get user tenants: %v", err)
-		}
-
-		if len(userTenants) < 2 {
-			t.Errorf("Expected at least 2 tenants, got %d", len(userTenants))
-		}
-	})
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Tenant assignment to Role and Permission")
 }
+
+var _ = Describe("Tenant Permissions", func() {
+	var (
+		db      *gorm.DB
+		cleanup func()
+		pm      *permission.PermManager
+	)
+
+	BeforeEach(func() {
+		db, cleanup = NewTestDB()
+		pm = permission.NewPermManager(
+			db,
+			config.WithTenant("uint"),
+		)
+	})
+
+	AfterEach(func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	})
+
+	Context("When tenant mode is enabled", func() {
+		BeforeEach(func() {
+			pm.WithTenant("1")
+		})
+
+		It("should register tenant-specific permission with tenant_id", func() {
+			perm, err := pm.Registrar.Register("tenant.data.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perm.TenantID).ToNot(BeNil())
+			Expect(*perm.TenantID).To(Equal("1"))
+		})
+
+		It("should register global permission without tenant_id", func() {
+			globalPerm, err := pm.Registrar.RegisterGlobal("system.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(globalPerm.TenantID).To(BeNil())
+		})
+
+		It("should create role with tenant context", func() {
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			roleObj, err := roleManager.Registrar.Register("tenant-admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roleObj.TenantID).ToNot(BeNil())
+			Expect(*roleObj.TenantID).To(Equal("1"))
+		})
+	})
+
+	Context("When switching tenants", func() {
+		It("should create tenant-specific permissions for different tenants", func() {
+			// Register permission for tenant-1
+			pm.WithTenant("1")
+			perm1, err := pm.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perm1.TenantID).ToNot(BeNil())
+			Expect(*perm1.TenantID).To(Equal("1"))
+
+			// Switch to tenant-2 and register same permission name
+			pm.WithTenant("2")
+			perm2, err := pm.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perm2.TenantID).ToNot(BeNil())
+			Expect(*perm2.TenantID).To(Equal("2"))
+
+			// Verify they are different records
+			Expect(perm1.ID).ToNot(Equal(perm2.ID))
+		})
+
+		It("should create tenant-specific roles for different tenants", func() {
+			// Create role manager
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+
+			// Create role for tenant-1 using WithTenant on role manager
+			roleManager1 := roleManager.WithTenant("1")
+			role1, err := roleManager1.Registrar.Register("admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(role1.TenantID).ToNot(BeNil())
+			Expect(*role1.TenantID).To(Equal("1"))
+
+			// Create role for tenant-2 using WithTenant on role manager
+			roleManager2 := roleManager.WithTenant("2")
+			role2, err := roleManager2.Registrar.Register("admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(role2.TenantID).ToNot(BeNil())
+			Expect(*role2.TenantID).To(Equal("2"))
+
+			Expect(role1.ID).ToNot(Equal(role2.ID))
+		})
+	})
+})

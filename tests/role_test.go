@@ -1,196 +1,286 @@
 package tests
 
 import (
+	"github.com/mwangaben/permission/models"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"testing"
 
-	"github.com/google/uuid"
-	"github.com/mwangaben/permission/models"
+	"github.com/mwangaben/permission/config"
 	"github.com/mwangaben/permission/permission"
 	"github.com/mwangaben/permission/role"
+	"gorm.io/gorm"
 )
 
-func TestRoleRegistration(t *testing.T) {
-	db := SetupTestDB(t)
-	defer CleanupTestDB(db)
-
-	db.AutoMigrate(&models.Permission{}, &models.Role{})
-
-	permReg := permission.NewRegistrar(db)
-	roleReg := role.NewRegistrar(db)
-
-	// Create permissions
-	perm1 := &models.Permission{
-		ID:     uuid.New().String(),
-		Name:   "user.view",
-		Model:  "user",
-		Action: "view",
-	}
-	perm2 := &models.Permission{
-		ID:     uuid.New().String(),
-		Name:   "user.edit",
-		Model:  "user",
-		Action: "edit",
-	}
-	permReg.Register(perm1)
-	permReg.Register(perm2)
-
-	t.Run("Register role", func(t *testing.T) {
-		roleObj := &models.Role{
-			ID:          uuid.New().String(),
-			Name:        "editor",
-			DisplayName: "Editor",
-			Description: "Can view and edit users",
-			Permissions: []models.Permission{*perm1, *perm2},
-		}
-
-		err := roleReg.Register(roleObj)
-		if err != nil {
-			t.Fatalf("Failed to register role: %v", err)
-		}
-
-		var found models.Role
-		db.Where("name = ?", "editor").First(&found)
-		if found.Name != "editor" {
-			t.Errorf("Expected name 'editor', got '%s'", found.Name)
-		}
-	})
-
-	t.Run("Register duplicate role (should update)", func(t *testing.T) {
-		roleObj := &models.Role{
-			Name:        "editor",
-			DisplayName: "Editor Updated",
-			Description: "Updated description",
-			IsDefault:   true,
-		}
-
-		err := roleReg.Register(roleObj)
-		if err != nil {
-			t.Fatalf("Failed to register duplicate role: %v", err)
-		}
-
-		var found models.Role
-		db.Where("name = ?", "editor").First(&found)
-		if found.DisplayName != "Editor Updated" {
-			t.Errorf("Expected display name 'Editor Updated', got '%s'", found.DisplayName)
-		}
-		if !found.IsDefault {
-			t.Error("Expected role to be default")
-		}
-	})
-
-	t.Run("Register tenant-specific role", func(t *testing.T) {
-		tenantID := "tenant-1"
-		roleObj := &models.Role{
-			ID:          uuid.New().String(),
-			Name:        "tenant-admin",
-			DisplayName: "Tenant Admin",
-			TenantID:    &tenantID,
-			Permissions: []models.Permission{*perm1},
-		}
-
-		err := roleReg.Register(roleObj)
-		if err != nil {
-			t.Fatalf("Failed to register tenant role: %v", err)
-		}
-
-		var found models.Role
-		db.Where("name = ? AND tenant_id = ?", "tenant-admin", tenantID).First(&found)
-		if found.TenantID == nil || *found.TenantID != tenantID {
-			t.Errorf("Expected tenant ID '%s', got '%v'", tenantID, found.TenantID)
-		}
-	})
+func TestRole(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Role Tests")
 }
 
-func TestRoleAssignment(t *testing.T) {
-	db := SetupTestDB(t)
-	defer CleanupTestDB(db)
+var _ = Describe("Role Management", func() {
+	var (
+		db      *gorm.DB
+		cleanup func()
+		pm      *permission.PermManager
+	)
 
-	db.AutoMigrate(&models.Permission{}, &models.Role{})
+	BeforeEach(func() {
+		db, cleanup = NewTestDB()
+		pm = permission.NewPermManager(db)
+	})
 
-	db.Exec(`CREATE TABLE IF NOT EXISTS role_user (
-		user_id VARCHAR(100),
-		role_id VARCHAR(100)
-	)`)
-
-	permReg := permission.NewRegistrar(db)
-	roleReg := role.NewRegistrar(db)
-	assigner := role.NewAssigner(db)
-
-	perm := &models.Permission{
-		ID:     uuid.New().String(),
-		Name:   "user.view",
-		Model:  "user",
-		Action: "view",
-	}
-	permReg.Register(perm)
-
-	roleObj := &models.Role{
-		ID:          uuid.New().String(),
-		Name:        "viewer",
-		DisplayName: "Viewer",
-		Permissions: []models.Permission{*perm},
-	}
-	roleReg.Register(roleObj)
-
-	t.Run("Assign role to user", func(t *testing.T) {
-		err := assigner.Assign("user-1", roleObj.ID)
-		if err != nil {
-			t.Fatalf("Failed to assign role: %v", err)
-		}
-
-		var count int64
-		db.Table("role_user").Where("user_id = ? AND role_id = ?", "user-1", roleObj.ID).Count(&count)
-		if count == 0 {
-			t.Error("Role was not assigned to user")
+	AfterEach(func() {
+		if cleanup != nil {
+			cleanup()
 		}
 	})
 
-	t.Run("Assign role by name", func(t *testing.T) {
-		err := assigner.AssignByName("user-2", "viewer", nil)
-		if err != nil {
-			t.Fatalf("Failed to assign role by name: %v", err)
-		}
+	Context("Role Registration", func() {
+		BeforeEach(func() {
+			// Register permissions first
+			_, err := pm.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			_, err = pm.Registrar.Register("user.edit", "web")
+			Expect(err).ToNot(HaveOccurred())
+		})
 
-		var count int64
-		db.Table("role_user").Where("user_id = ?", "user-2").Count(&count)
-		if count == 0 {
-			t.Error("Role was not assigned to user by name")
-		}
+		It("should register a new role", func() {
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			roleObj, err := roleManager.Registrar.Register("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roleObj.Name).To(Equal("editor"))
+			Expect(roleObj.GuardName).To(Equal("web"))
+		})
+
+		It("should return existing role when registering duplicate", func() {
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			_, err := roleManager.Registrar.Register("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			roleObj, err := roleManager.Registrar.Register("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roleObj.Name).To(Equal("editor"))
+		})
+
+		It("should find a role by name", func() {
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			_, err := roleManager.Registrar.Register("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			found, err := roleManager.Registrar.FindByName("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found.Name).To(Equal("editor"))
+		})
+
+		It("should register tenant-specific role", func() {
+			// Enable tenant mode
+			pm.EnableTenant("string")
+			pm.WithTenant("tenant-1")
+
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			roleObj, err := roleManager.Registrar.Register("tenant-admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roleObj.TenantID).ToNot(BeNil())
+			Expect(*roleObj.TenantID).To(Equal("tenant-1"))
+		})
 	})
 
-	t.Run("Remove role from user", func(t *testing.T) {
-		err := assigner.Remove("user-1", roleObj.ID)
-		if err != nil {
-			t.Fatalf("Failed to remove role: %v", err)
-		}
+	Context("Role Permission Assignment", func() {
+		var (
+			perm1       *models.Permission
+			perm2       *models.Permission
+			roleObj     *models.Role
+			roleManager *role.Manager
+		)
 
-		var count int64
-		db.Table("role_user").Where("user_id = ? AND role_id = ?", "user-1", roleObj.ID).Count(&count)
-		if count > 0 {
-			t.Error("Role was not removed from user")
-		}
+		BeforeEach(func() {
+			var err error
+			// Register permissions
+			perm1, err = pm.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			perm2, err = pm.Registrar.Register("user.edit", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Create role
+			roleManager = role.NewManager(db, pm.Config, pm.Tenant)
+			roleObj, err = roleManager.Registrar.Register("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("should assign permissions to a role", func() {
+			permManager := role.NewPermissionManager(db)
+			err := permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			err = permManager.AssignPermissionToRole(perm2.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Get permissions for role
+			perms, err := permManager.GetPermissionsForRole(roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(2))
+
+			// Reload role with permissions
+			reloadedRole, err := roleManager.Registrar.FindByName("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(reloadedRole.HasPermission("user.view")).To(BeTrue())
+			Expect(reloadedRole.HasPermission("user.edit")).To(BeTrue())
+		})
 	})
 
-	t.Run("Sync roles", func(t *testing.T) {
-		role2 := &models.Role{
-			ID:          uuid.New().String(),
-			Name:        "editor",
-			DisplayName: "Editor",
-		}
-		roleReg.Register(role2)
+	Context("Role Assignment to Models", func() {
+		var (
+			roleObj  *models.Role
+			assigner *role.Assigner
+		)
 
-		assigner.Assign("user-3", roleObj.ID)
-		assigner.Assign("user-3", role2.ID)
+		BeforeEach(func() {
+			// Register permission
+			perm1, err := pm.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
 
-		err := assigner.SyncRoles("user-3", []string{role2.ID})
-		if err != nil {
-			t.Fatalf("Failed to sync roles: %v", err)
-		}
+			// Create role
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			roleObj, err = roleManager.Registrar.Register("viewer", "web")
+			Expect(err).ToNot(HaveOccurred())
 
-		var count int64
-		db.Table("role_user").Where("user_id = ?", "user-3").Count(&count)
-		if count != 1 {
-			t.Errorf("Expected 1 role after sync, got %d", count)
-		}
+			// Assign permission to role
+			permManager := role.NewPermissionManager(db)
+			err = permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Create assigner
+			assigner = role.NewAssigner(db)
+		})
+
+		It("should assign role to model", func() {
+			err := assigner.AssignRoleToModel(roleObj.ID, "user", 1)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify assignment
+			roles, err := assigner.GetRolesForModel("user", 1)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roles).ToNot(BeEmpty())
+		})
+
+		It("should assign role to model by name", func() {
+			err := assigner.AssignRoleToModelByName("viewer", "user", 2, "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			roles, err := assigner.GetRolesForModel("user", 2)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roles).ToNot(BeEmpty())
+		})
+
+		It("should remove role from model", func() {
+			// First assign role
+			err := assigner.AssignRoleToModel(roleObj.ID, "user", 1)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Then remove it
+			err = assigner.RemoveRoleFromModel(roleObj.ID, "user", 1)
+			Expect(err).ToNot(HaveOccurred())
+
+			roles, err := assigner.GetRolesForModel("user", 1)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roles).To(BeEmpty())
+		})
+
+		It("should sync roles for model", func() {
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			role2, err := roleManager.Registrar.Register("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Assign both roles to user
+			err = assigner.AssignRoleToModel(roleObj.ID, "user", 3)
+			Expect(err).ToNot(HaveOccurred())
+			err = assigner.AssignRoleToModel(role2.ID, "user", 3)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Sync roles (only keep role2)
+			err = assigner.SyncRolesForModel("user", 3, []uint{role2.ID})
+			Expect(err).ToNot(HaveOccurred())
+
+			roles, err := assigner.GetRolesForModel("user", 3)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roles).To(HaveLen(1))
+			Expect(roles[0].ID).To(Equal(role2.ID))
+		})
 	})
-}
+
+	Context("Role with Tenant Support", func() {
+		var (
+			tenantPM *permission.PermManager
+		)
+
+		BeforeEach(func() {
+			// Create manager with tenant enabled
+			tenantPM = permission.NewPermManager(
+				db,
+				config.WithTenant("string"),
+			)
+		})
+
+		It("should create tenant-specific roles and permissions", func() {
+			// Register permission for tenant-1
+			tenantPM.WithTenant("tenant-1")
+			perm1, err := tenantPM.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perm1.TenantID).ToNot(BeNil())
+			Expect(*perm1.TenantID).To(Equal("tenant-1"))
+
+			// Create role for tenant-1
+			roleManager := role.NewManager(db, tenantPM.Config, tenantPM.Tenant)
+			role1, err := roleManager.Registrar.Register("admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(role1.TenantID).ToNot(BeNil())
+			Expect(*role1.TenantID).To(Equal("tenant-1"))
+
+			// Assign permission to role
+			permManager := role.NewPermissionManager(db)
+			err = permManager.AssignPermissionToRole(perm1.ID, role1.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Assign role to user (tenant-1)
+			assigner := role.NewAssigner(db)
+			err = assigner.AssignRoleToModel(role1.ID, "user", 1)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Check permission for tenant-1
+			checker := permission.NewChecker(db, tenantPM.Config, tenantPM.Tenant)
+			has, err := checker.HasPermission("user", 1, "user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeTrue())
+
+			// Switch to tenant-2
+			tenantPM.WithTenant("tenant-2")
+			checker = permission.NewChecker(db, tenantPM.Config, tenantPM.Tenant)
+
+			// Check permission for tenant-2 (should not have permission)
+			has, err = checker.HasPermission("user", 1, "user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeFalse())
+		})
+
+		It("should create tenant-specific roles for different tenants", func() {
+			roleManager := role.NewManager(db, tenantPM.Config, tenantPM.Tenant)
+
+			// Create role for tenant-1
+			tenantPM.WithTenant("tenant-1")
+			roleManager1 := roleManager.WithTenant("tenant-1")
+			role1, err := roleManager1.Registrar.Register("admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(role1.TenantID).ToNot(BeNil())
+			Expect(*role1.TenantID).To(Equal("tenant-1"))
+
+			// Create role for tenant-2
+			tenantPM.WithTenant("tenant-2")
+			roleManager2 := roleManager.WithTenant("tenant-2")
+			role2, err := roleManager2.Registrar.Register("admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(role2.TenantID).ToNot(BeNil())
+			Expect(*role2.TenantID).To(Equal("tenant-2"))
+
+			Expect(role1.ID).ToNot(Equal(role2.ID))
+		})
+	})
+})

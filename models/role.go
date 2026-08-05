@@ -8,14 +8,11 @@ import (
 
 // Role represents a role in the system
 type Role struct {
-	ID          string         `gorm:"primaryKey;type:varchar(100)" json:"id"`
-	Name        string         `gorm:"type:varchar(255);uniqueIndex:idx_role_name_tenant;not null" json:"name"`
-	DisplayName string         `gorm:"type:varchar(255)" json:"display_name"`
-	Description string         `gorm:"type:text" json:"description"`
-	TenantID    *string        `gorm:"type:varchar(100);index;uniqueIndex:idx_role_name_tenant" json:"tenant_id"`
-	GuardName   string         `gorm:"type:varchar(100);default:web" json:"guard_name"`
-	IsDefault   bool           `gorm:"default:false" json:"is_default"`
-	Permissions []Permission   `gorm:"many2many:role_permissions;" json:"permissions,omitempty"`
+	ID          uint           `gorm:"primaryKey" json:"id"`
+	Name        string         `gorm:"type:varchar(255);uniqueIndex:idx_roles_name_guard_tenant;not null" json:"name"`
+	GuardName   string         `gorm:"type:varchar(100);default:web;uniqueIndex:idx_roles_name_guard_tenant" json:"guard_name"`
+	TenantID    *string        `gorm:"type:varchar(100);uniqueIndex:idx_roles_name_guard_tenant;index:idx_roles_tenant" json:"tenant_id,omitempty"`
+	Permissions []Permission   `gorm:"many2many:role_has_permissions;" json:"permissions,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
@@ -24,6 +21,19 @@ type Role struct {
 // TableName specifies the table name
 func (Role) TableName() string {
 	return "roles"
+}
+
+// IsTenantScoped checks if the role is tenant-scoped
+func (r *Role) IsTenantScoped() bool {
+	return r.TenantID != nil && *r.TenantID != ""
+}
+
+// ScopeTenant scopes the query to a specific tenant
+func (r *Role) ScopeTenant(db *gorm.DB, tenantID string) *gorm.DB {
+	if tenantID == "" {
+		return db.Where("tenant_id IS NULL")
+	}
+	return db.Where("tenant_id = ? OR tenant_id IS NULL", tenantID)
 }
 
 // HasPermission checks if the role has a specific permission
@@ -54,20 +64,4 @@ func (r *Role) HasAllPermissions(permissionNames ...string) bool {
 		}
 	}
 	return true
-}
-
-// HasModelPermission checks if the role has any permission for a model
-func (r *Role) HasModelPermission(model string, action string) bool {
-	return r.HasPermission(model + "." + action)
-}
-
-// GetModelPermissions returns all permissions for a specific model
-func (r *Role) GetModelPermissions(model string) []string {
-	var permissions []string
-	for _, p := range r.Permissions {
-		if p.Model == model {
-			permissions = append(permissions, p.Name)
-		}
-	}
-	return permissions
 }

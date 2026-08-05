@@ -158,6 +158,7 @@ func checkPermission(db *gorm.DB, ctx context.Context, userID string) bool {
     }
     return false
 }
+
 ```
 
 #### Integration with REST API

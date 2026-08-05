@@ -1,227 +1,372 @@
 package tests
 
 import (
-	"context"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/mwangaben/permission/models"
 	"github.com/mwangaben/permission/permission"
 	"github.com/mwangaben/permission/role"
+	"gorm.io/gorm"
 )
 
-func TestPermissionRegistration(t *testing.T) {
-	db := SetupTestDB(t)
-	defer CleanupTestDB(db)
-
-	db.AutoMigrate(&models.Permission{})
-
-	permReg := permission.NewRegistrar(db)
-
-	perm := &models.Permission{
-		ID:          uuid.New().String(),
-		Name:        "user.view",
-		Model:       "user",
-		Action:      "view",
-		DisplayName: "View Users",
-		Description: "Can view user list and user details",
-	}
-
-	t.Run("Register permission", func(t *testing.T) {
-		err := permReg.Register(perm)
-		if err != nil {
-			t.Fatalf("Failed to register permission: %v", err)
-		}
-
-		var found models.Permission
-		if err := db.Where("name = ?", "user.view").First(&found).Error; err != nil {
-			t.Fatalf("Permission not found: %v", err)
-		}
-
-		if found.Name != "user.view" {
-			t.Errorf("Expected name 'user.view', got '%s'", found.Name)
-		}
-		if found.Model != "user" {
-			t.Errorf("Expected model 'user', got '%s'", found.Model)
-		}
-		if found.Action != "view" {
-			t.Errorf("Expected action 'view', got '%s'", found.Action)
-		}
-	})
-
-	t.Run("Register duplicate permission (should update)", func(t *testing.T) {
-		perm := &models.Permission{
-			Name:        "user.view",
-			DisplayName: "View Users Updated",
-			Description: "Updated description",
-			Model:       "user",
-			Action:      "view",
-		}
-
-		err := permReg.Register(perm)
-		if err != nil {
-			t.Fatalf("Failed to register duplicate permission: %v", err)
-		}
-
-		var found models.Permission
-		db.Where("name = ?", "user.view").First(&found)
-		if found.DisplayName != "View Users Updated" {
-			t.Errorf("Expected display name 'View Users Updated', got '%s'", found.DisplayName)
-		}
-	})
-
-	t.Run("Register tenant-specific permission", func(t *testing.T) {
-		tenantID := "tenant-1"
-		perm := &models.Permission{
-			ID:          uuid.New().String(),
-			Name:        "tenant.data.view",
-			Model:       "tenant-data",
-			Action:      "view",
-			DisplayName: "View Tenant Data",
-			TenantID:    &tenantID,
-		}
-
-		err := permReg.Register(perm)
-		if err != nil {
-			t.Fatalf("Failed to register tenant permission: %v", err)
-		}
-
-		var found models.Permission
-		db.Where("name = ? AND tenant_id = ?", "tenant.data.view", tenantID).First(&found)
-		if found.TenantID == nil || *found.TenantID != tenantID {
-			t.Errorf("Expected tenant ID '%s', got '%v'", tenantID, found.TenantID)
-		}
-	})
-
-	t.Run("Register model permissions", func(t *testing.T) {
-		err := permReg.RegisterModelPermissions("post", "Post", nil)
-		if err != nil {
-			t.Fatalf("Failed to register model permissions: %v", err)
-		}
-
-		var count int64
-		db.Model(&models.Permission{}).Where("model = ?", "post").Count(&count)
-		if count != 4 {
-			t.Errorf("Expected 4 permissions for 'post' model, got %d", count)
-		}
-	})
-
-	t.Run("Invalid permission name format", func(t *testing.T) {
-		perm := &models.Permission{
-			Name: "invalidname", // Missing dot
-		}
-		err := permReg.Register(perm)
-		if err == nil {
-			t.Error("Expected error for invalid permission name format")
-		}
-	})
+func TestPermission(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Permission Suite")
 }
 
-func TestPermissionChecker(t *testing.T) {
-	db := SetupTestDB(t)
-	defer CleanupTestDB(db)
+var _ = Describe("Permission System", func() {
+	var (
+		db      *gorm.DB
+		cleanup func()
+		pm      *permission.PermManager
+	)
 
-	// Auto migrate
-	db.AutoMigrate(&models.Permission{}, &models.Role{})
+	BeforeEach(func() {
+		db, cleanup = NewTestDB()
+		pm = permission.NewPermManager(db)
+	})
 
-	// Create the role_user table if it doesn't exist
-	db.Exec(`CREATE TABLE IF NOT EXISTS role_user (
-		user_id VARCHAR(100),
-		role_id VARCHAR(100),
-		PRIMARY KEY (user_id, role_id)
-	)`)
-
-	permReg := permission.NewRegistrar(db)
-	roleReg := role.NewRegistrar(db)
-
-	// Create permissions
-	permView := &models.Permission{
-		ID:     uuid.New().String(),
-		Name:   "user.view",
-		Model:  "user",
-		Action: "view",
-	}
-	permCreate := &models.Permission{
-		ID:     uuid.New().String(),
-		Name:   "user.create",
-		Model:  "user",
-		Action: "create",
-	}
-	permReg.Register(permView)
-	permReg.Register(permCreate)
-
-	// Create role with permissions
-	roleAdmin := &models.Role{
-		ID:          uuid.New().String(),
-		Name:        "admin",
-		DisplayName: "Administrator",
-		Permissions: []models.Permission{*permView, *permCreate},
-	}
-	roleReg.Register(roleAdmin)
-
-	// Assign role to user
-	db.Exec("INSERT INTO role_user (user_id, role_id) VALUES (?, ?)", "user-1", roleAdmin.ID)
-
-	checker := permission.NewChecker(db)
-	ctx := context.Background()
-
-	t.Run("Has permission", func(t *testing.T) {
-		has, err := checker.HasPermission(ctx, "user-1", "user.view", nil)
-		if err != nil {
-			t.Fatalf("Failed to check permission: %v", err)
-		}
-		if !has {
-			t.Error("Expected user to have 'user.view' permission")
+	AfterEach(func() {
+		if cleanup != nil {
+			cleanup()
 		}
 	})
 
-	t.Run("Has model permission", func(t *testing.T) {
-		has, err := checker.HasModelPermission(ctx, "user-1", "user", "view", nil)
-		if err != nil {
-			t.Fatalf("Failed to check model permission: %v", err)
-		}
-		if !has {
-			t.Error("Expected user to have 'user.view' permission")
-		}
+	Context("Permission Registration", func() {
+		It("should register a new permission", func() {
+			perm, err := pm.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perm.Name).To(Equal("user.view"))
+			Expect(perm.GuardName).To(Equal("web"))
+		})
+
+		It("should find a permission by name", func() {
+			_, err := pm.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			found, err := pm.Registrar.FindByName("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found.Name).To(Equal("user.view"))
+		})
+
+		It("should register multiple permissions", func() {
+			permissions := []struct{ Name, GuardName string }{
+				{"user.view", "web"},
+				{"user.create", "web"},
+				{"user.update", "web"},
+			}
+			created, err := pm.Registrar.RegisterMany(permissions)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(len(created)).To(Equal(3))
+		})
+
+		It("should register global permission", func() {
+			globalPerm, err := pm.Registrar.RegisterGlobal("system.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(globalPerm.TenantID).To(BeNil())
+		})
 	})
 
-	t.Run("Has any permission", func(t *testing.T) {
-		has, err := checker.HasAnyPermission(ctx, "user-1", nil, "user.view", "post.delete")
-		if err != nil {
-			t.Fatalf("Failed to check any permission: %v", err)
-		}
-		if !has {
-			t.Error("Expected user to have at least one permission")
-		}
+	Context("Role Registration", func() {
+		It("should register a new role", func() {
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			roleObj, err := roleManager.Registrar.Register("admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roleObj.Name).To(Equal("admin"))
+			Expect(roleObj.GuardName).To(Equal("web"))
+		})
+
+		It("should find a role by name", func() {
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			_, err := roleManager.Registrar.Register("admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			found, err := roleManager.Registrar.FindByName("admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found.Name).To(Equal("admin"))
+		})
+
+		It("should register tenant-specific role", func() {
+			pm.EnableTenant("string")
+			pm.WithTenant("tenant-1")
+
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			roleObj, err := roleManager.Registrar.Register("tenant-admin", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roleObj.TenantID).ToNot(BeNil())
+			Expect(*roleObj.TenantID).To(Equal("tenant-1"))
+		})
 	})
 
-	t.Run("Has all permissions", func(t *testing.T) {
-		has, err := checker.HasAllPermissions(ctx, "user-1", nil, "user.view", "user.create")
-		if err != nil {
-			t.Fatalf("Failed to check all permissions: %v", err)
-		}
-		if !has {
-			t.Error("Expected user to have all permissions")
-		}
+	Context("Role Permission Assignment", func() {
+		var (
+			perm1       *models.Permission
+			perm2       *models.Permission
+			roleObj     *models.Role
+			roleManager *role.Manager
+			permManager *role.PermissionManager
+		)
+
+		BeforeEach(func() {
+			var err error
+			// Register permissions
+			perm1, err = pm.Registrar.Register("user.view", "web")
+			Expect(err).ToNot(HaveOccurred())
+			perm2, err = pm.Registrar.Register("user.edit", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Create role
+			roleManager = role.NewManager(db, pm.Config, pm.Tenant)
+			roleObj, err = roleManager.Registrar.Register("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			permManager = role.NewPermissionManager(db)
+		})
+
+		It("should assign permissions to a role", func() {
+			err := permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			err = permManager.AssignPermissionToRole(perm2.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Get permissions for role
+			perms, err := permManager.GetPermissionsForRole(roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(2))
+
+			// Reload role with permissions
+			reloadedRole, err := roleManager.Registrar.FindByName("editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(reloadedRole.HasPermission("user.view")).To(BeTrue())
+			Expect(reloadedRole.HasPermission("user.edit")).To(BeTrue())
+		})
+
+		It("should assign permission to role by name", func() {
+			err := permManager.AssignPermissionToRoleByName("user.view", "editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify assignment
+			perms, err := permManager.GetPermissionsForRole(roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(1))
+			Expect(perms[0].Name).To(Equal("user.view"))
+		})
+
+		It("should remove/revoke a permission from a role", func() {
+			// First assign permissions
+			err := permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			err = permManager.AssignPermissionToRole(perm2.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify both permissions are assigned
+			perms, err := permManager.GetPermissionsForRole(roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(2))
+
+			// Remove one permission
+			err = permManager.RemovePermissionFromRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify only one permission remains
+			perms, err = permManager.GetPermissionsForRole(roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(1))
+			Expect(perms[0].Name).To(Equal("user.edit"))
+		})
+
+		It("should remove/revoke a permission from a role by name", func() {
+			// First assign permissions
+			err := permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			err = permManager.AssignPermissionToRole(perm2.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify both permissions are assigned
+			perms, err := permManager.GetPermissionsForRole(roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(2))
+
+			// Remove one permission by name
+			err = permManager.RemovePermissionFromRoleByName("user.view", "editor", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify only one permission remains
+			perms, err = permManager.GetPermissionsForRole(roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(1))
+			Expect(perms[0].Name).To(Equal("user.edit"))
+		})
+
+		It("should check if role has a specific permission", func() {
+			err := permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			has, err := permManager.HasPermissionForRole(roleObj.ID, "user.view", nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeTrue())
+
+			has, err = permManager.HasPermissionForRole(roleObj.ID, "user.delete", nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeFalse())
+		})
+
+		It("should get all roles with a specific permission", func() {
+			// Create another role
+			roleManager := role.NewManager(db, pm.Config, pm.Tenant)
+			role2, err := roleManager.Registrar.Register("viewer", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Assign same permission to both roles
+			err = permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			err = permManager.AssignPermissionToRole(perm1.ID, role2.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Get roles with permission
+			roles, err := permManager.GetRolesWithPermission("user.view", nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(roles).To(HaveLen(2))
+		})
+
+		It("should sync permissions for a role", func() {
+			// Register a third permission
+			perm3, err := pm.Registrar.Register("user.delete", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Assign initial permissions
+			err = permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			err = permManager.AssignPermissionToRole(perm2.ID, roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Sync permissions (only keep perm2 and perm3)
+			err = permManager.SyncPermissionsForRole(roleObj.ID, []uint{perm2.ID, perm3.ID})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify only perm2 and perm3 remain
+			perms, err := permManager.GetPermissionsForRole(roleObj.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(2))
+			Expect(perms[0].Name).To(Equal("user.edit"))
+			Expect(perms[1].Name).To(Equal("user.delete"))
+		})
 	})
 
-	t.Run("Get user permissions", func(t *testing.T) {
-		perms, err := checker.GetUserPermissions(ctx, "user-1", nil)
-		if err != nil {
-			t.Fatalf("Failed to get user permissions: %v", err)
-		}
-		if len(perms) < 2 {
-			t.Errorf("Expected at least 2 permissions, got %d", len(perms))
-		}
-	})
+	Context("Direct Permission Assignment to Models", func() {
+		var (
+			perm           *models.Permission
+			directAssigner *permission.DirectAssigner
+		)
 
-	t.Run("Get user permission names", func(t *testing.T) {
-		names, err := checker.GetUserPermissionNames(ctx, "user-1", nil)
-		if err != nil {
-			t.Fatalf("Failed to get user permission names: %v", err)
-		}
-		if len(names) < 2 {
-			t.Errorf("Expected at least 2 permission names, got %d", len(names))
-		}
+		BeforeEach(func() {
+			var err error
+			// Register permission
+			perm, err = pm.Registrar.Register("special.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			directAssigner = permission.NewDirectAssigner(db)
+		})
+
+		It("should assign permission directly to a model", func() {
+			err := directAssigner.AssignPermissionToModel(perm.ID, "user", 2)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify direct permission
+			checker := permission.NewChecker(db, pm.Config, pm.Tenant)
+			has, err := checker.HasPermission("user", 2, "special.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeTrue())
+		})
+
+		It("should assign permission directly to a model by name", func() {
+			err := directAssigner.AssignPermissionToModelByName("special.access", "user", 3, "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify direct permission
+			checker := permission.NewChecker(db, pm.Config, pm.Tenant)
+			has, err := checker.HasPermission("user", 3, "special.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeTrue())
+		})
+
+		It("should remove direct permission from a model", func() {
+			// First assign permission
+			err := directAssigner.AssignPermissionToModel(perm.ID, "user", 4)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify permission exists
+			checker := permission.NewChecker(db, pm.Config, pm.Tenant)
+			has, err := checker.HasPermission("user", 4, "special.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeTrue())
+
+			// Remove permission
+			err = directAssigner.RemovePermissionFromModel(perm.ID, "user", 4)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify permission is removed
+			has, err = checker.HasPermission("user", 4, "special.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeFalse())
+		})
+
+		It("should get direct permissions for a model", func() {
+			// Register another permission
+			perm2, err := pm.Registrar.Register("admin.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Assign multiple permissions
+			err = directAssigner.AssignPermissionToModel(perm.ID, "user", 5)
+			Expect(err).ToNot(HaveOccurred())
+			err = directAssigner.AssignPermissionToModel(perm2.ID, "user", 5)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Get direct permissions
+			perms, err := directAssigner.GetDirectPermissionsForModel("user", 5)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(2))
+		})
+
+		It("should check if model has direct permission", func() {
+			err := directAssigner.AssignPermissionToModel(perm.ID, "user", 6)
+			Expect(err).ToNot(HaveOccurred())
+
+			has, err := directAssigner.HasDirectPermission("user", 6, "special.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeTrue())
+
+			has, err = directAssigner.HasDirectPermission("user", 6, "admin.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeFalse())
+		})
+
+		It("should sync direct permissions for a model", func() {
+			// Register another permission
+			perm2, err := pm.Registrar.Register("admin.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+			perm3, err := pm.Registrar.Register("moderator.access", "web")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Assign initial permissions
+			err = directAssigner.AssignPermissionToModel(perm.ID, "user", 7)
+			Expect(err).ToNot(HaveOccurred())
+			err = directAssigner.AssignPermissionToModel(perm2.ID, "user", 7)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Sync permissions (only keep perm2 and perm3)
+			err = directAssigner.SyncPermissionsForModel("user", 7, []uint{perm2.ID, perm3.ID})
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify only perm2 and perm3 remain
+			perms, err := directAssigner.GetDirectPermissionsForModel("user", 7)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(perms).To(HaveLen(2))
+			permNames := []string{perms[0].Name, perms[1].Name}
+			Expect(permNames).To(ContainElement("admin.access"))
+			Expect(permNames).To(ContainElement("moderator.access"))
+		})
 	})
-}
+})
