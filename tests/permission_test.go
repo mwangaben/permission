@@ -20,12 +20,12 @@ var _ = Describe("Permission System", func() {
 	var (
 		db      *gorm.DB
 		cleanup func()
-		pm      *permission.PermManager
+		pm      *permission.Manager
 	)
 
 	BeforeEach(func() {
 		db, cleanup = NewTestDB()
-		pm = permission.NewPermManager(db)
+		pm = permission.NewManager(db)
 	})
 
 	AfterEach(func() {
@@ -137,7 +137,7 @@ var _ = Describe("Permission System", func() {
 			Expect(perms).To(HaveLen(2))
 
 			// Reload role with permissions
-			reloadedRole, err := roleManager.Registrar.FindByName("editor", "web")
+			reloadedRole, err := roleManager.Registrar.FindByName(roleObj.Name, "web")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(reloadedRole.HasPermission("user.view")).To(BeTrue())
 			Expect(reloadedRole.HasPermission("user.edit")).To(BeTrue())

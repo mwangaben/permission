@@ -19,12 +19,12 @@ var _ = Describe("Permission Checker", func() {
 	var (
 		db      *gorm.DB
 		cleanup func()
-		pm      *permission.PermManager
+		pm      *permission.Manager
 	)
 
 	BeforeEach(func() {
 		db, cleanup = NewTestDB()
-		pm = permission.NewPermManager(db)
+		pm = permission.NewManager(db)
 	})
 
 	AfterEach(func() {

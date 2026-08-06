@@ -20,12 +20,12 @@ var _ = Describe("Tenant Permissions", func() {
 	var (
 		db      *gorm.DB
 		cleanup func()
-		pm      *permission.PermManager
+		pm      *permission.Manager
 	)
 
 	BeforeEach(func() {
 		db, cleanup = NewTestDB()
-		pm = permission.NewPermManager(
+		pm = permission.NewManager(
 			db,
 			config.WithTenant("uint"),
 		)

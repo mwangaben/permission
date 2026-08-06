@@ -19,14 +19,13 @@ func NewPermissionManager(db *gorm.DB) *PermissionManager {
 
 // AssignPermissionToRole assigns a permission to a role
 func (pm *PermissionManager) AssignPermissionToRole(permissionID, roleID uint) error {
-	// Check if already assigned
 	var count int64
 	pm.db.Model(&models.RoleHasPermission{}).
 		Where("permission_id = ? AND role_id = ?", permissionID, roleID).
 		Count(&count)
 
 	if count > 0 {
-		return nil // Already assigned
+		return nil
 	}
 
 	roleHasPermission := models.RoleHasPermission{
@@ -62,7 +61,7 @@ func (pm *PermissionManager) RemovePermissionFromRole(permissionID, roleID uint)
 		Delete(&models.RoleHasPermission{}).Error
 }
 
-// RemovePermissionFromRoleByName removes a permission from a role by name (revoke)
+// RemovePermissionFromRoleByName removes a permission from a role by name
 func (pm *PermissionManager) RemovePermissionFromRoleByName(permissionName, roleName, guardName string) error {
 	if guardName == "" {
 		guardName = "web"
@@ -93,31 +92,68 @@ func (pm *PermissionManager) GetPermissionsForRole(roleID uint) ([]models.Permis
 	return permissions, err
 }
 
-// HasPermission checks if a role has a specific permission
-func (pm *PermissionManager) HasPermission(roleID uint, permissionName string) (bool, error) {
-	var count int64
-	err := pm.db.Table("role_has_permissions").
-		Joins("JOIN permissions ON permissions.id = role_has_permissions.permission_id").
-		Where("role_has_permissions.role_id = ? AND permissions.name = ?", roleID, permissionName).
-		Count(&count).Error
+// GetPermissionsForRoleWithTenant returns all permissions for a role with tenant scoping
+func (pm *PermissionManager) GetPermissionsForRoleWithTenant(roleID uint, tenantID *string) ([]models.Permission, error) {
+	var permissions []models.Permission
 
-	if err != nil {
-		return false, err
+	query := pm.db.Table("permissions").
+		Joins("JOIN role_has_permissions ON role_has_permissions.permission_id = permissions.id").
+		Where("role_has_permissions.role_id = ?", roleID)
+
+	if tenantID != nil && *tenantID != "" {
+		query = query.Where("(permissions.tenant_id = ? OR permissions.tenant_id IS NULL)", *tenantID)
+		query = query.Where("(role_has_permissions.tenant_id = ? OR role_has_permissions.tenant_id IS NULL)", *tenantID)
 	}
-	return count > 0, nil
+
+	err := query.Find(&permissions).Error
+	return permissions, err
+}
+
+// HasPermissionForRole checks if a role has a specific permission
+func (pm *PermissionManager) HasPermissionForRole(roleID uint, permissionName string, tenantID *string) (bool, error) {
+	var count int64
+
+	query := pm.db.Table("role_has_permissions").
+		Joins("JOIN permissions ON permissions.id = role_has_permissions.permission_id").
+		Where("role_has_permissions.role_id = ? AND permissions.name = ?", roleID, permissionName)
+
+	if tenantID != nil && *tenantID != "" {
+		query = query.Where("(permissions.tenant_id = ? OR permissions.tenant_id IS NULL)", *tenantID)
+		query = query.Where("(role_has_permissions.tenant_id = ? OR role_has_permissions.tenant_id IS NULL)", *tenantID)
+	}
+
+	err := query.Count(&count).Error
+	return count > 0, err
+}
+
+// GetRolesWithPermission returns all roles that have a specific permission
+func (pm *PermissionManager) GetRolesWithPermission(permissionName string, tenantID *string) ([]models.Role, error) {
+	var roles []models.Role
+
+	query := pm.db.Table("roles").
+		Joins("JOIN role_has_permissions ON role_has_permissions.role_id = roles.id").
+		Joins("JOIN permissions ON permissions.id = role_has_permissions.permission_id").
+		Where("permissions.name = ?", permissionName)
+
+	if tenantID != nil && *tenantID != "" {
+		query = query.Where("(roles.tenant_id = ? OR roles.tenant_id IS NULL)", *tenantID)
+		query = query.Where("(permissions.tenant_id = ? OR permissions.tenant_id IS NULL)", *tenantID)
+		query = query.Where("(role_has_permissions.tenant_id = ? OR role_has_permissions.tenant_id IS NULL)", *tenantID)
+	}
+
+	err := query.Find(&roles).Error
+	return roles, err
 }
 
 // SyncPermissionsForRole syncs permissions for a role
 func (pm *PermissionManager) SyncPermissionsForRole(roleID uint, permissionIDs []uint) error {
 	tx := pm.db.Begin()
 
-	// Remove all existing permissions
 	if err := tx.Where("role_id = ?", roleID).Delete(&models.RoleHasPermission{}).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
 
-	// Assign new permissions
 	for _, permissionID := range permissionIDs {
 		roleHasPermission := models.RoleHasPermission{
 			PermissionID: permissionID,
@@ -130,4 +166,9 @@ func (pm *PermissionManager) SyncPermissionsForRole(roleID uint, permissionIDs [
 	}
 
 	return tx.Commit().Error
+}
+
+// RevokeAllPermissionsForRole removes all permissions from a role
+func (pm *PermissionManager) RevokeAllPermissionsForRole(roleID uint) error {
+	return pm.db.Where("role_id = ?", roleID).Delete(&models.RoleHasPermission{}).Error
 }

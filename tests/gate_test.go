@@ -19,14 +19,14 @@ func TestGateTest(t *testing.T) {
 	var _ = Describe("Guard", func() {
 		var (
 			db      *gorm.DB
-			pm      *permission.PermManager
+			pm      *permission.Manager
 			cleanup func()
 			ctx     context.Context
 		)
 
 		BeforeEach(func() {
 			db, cleanup = NewTestDB()
-			pm = permission.NewPermManager(db)
+			pm = permission.NewManager(db)
 			ctx = context.Background()
 
 			// Register permissions

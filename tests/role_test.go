@@ -21,12 +21,12 @@ var _ = Describe("Role Management", func() {
 	var (
 		db      *gorm.DB
 		cleanup func()
-		pm      *permission.PermManager
+		pm      *permission.Manager
 	)
 
 	BeforeEach(func() {
 		db, cleanup = NewTestDB()
-		pm = permission.NewPermManager(db)
+		pm = permission.NewManager(db)
 	})
 
 	AfterEach(func() {
@@ -209,12 +209,12 @@ var _ = Describe("Role Management", func() {
 
 	Context("Role with Tenant Support", func() {
 		var (
-			tenantPM *permission.PermManager
+			tenantPM *permission.Manager
 		)
 
 		BeforeEach(func() {
 			// Create manager with tenant enabled
-			tenantPM = permission.NewPermManager(
+			tenantPM = permission.NewManager(
 				db,
 				config.WithTenant("string"),
 			)

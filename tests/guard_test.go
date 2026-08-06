@@ -21,13 +21,13 @@ var _ = Describe("Guard", func() {
 	var (
 		db      *gorm.DB
 		cleanup func()
-		pm      *permission.PermManager
+		pm      *permission.Manager
 		ctx     context.Context
 	)
 
 	BeforeEach(func() {
 		db, cleanup = NewTestDB()
-		pm = permission.NewPermManager(db)
+		pm = permission.NewManager(db)
 		ctx = context.Background()
 
 		// Register permissions
