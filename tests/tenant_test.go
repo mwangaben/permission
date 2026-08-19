@@ -24,7 +24,7 @@ var _ = Describe("Tenant Permissions", func() {
 	)
 
 	BeforeEach(func() {
-		db, cleanup = NewTestDB()
+		db, cleanup = NewTestDBPost()
 		pm = permission.NewManager(
 			db,
 			config.WithTenant("uint"),

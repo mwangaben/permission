@@ -25,7 +25,7 @@ var _ = Describe("Role Management", func() {
 	)
 
 	BeforeEach(func() {
-		db, cleanup = NewTestDB()
+		db, cleanup = NewTestDBPost()
 		pm = permission.NewManager(db)
 	})
 

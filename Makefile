@@ -2,9 +2,9 @@
 
 # Database configuration for tests
 DB_HOST ?= localhost
-DB_PORT ?= 3306
-DB_USER ?= root
-DB_PASSWORD ?= root
+DB_PORT ?= 5432
+DB_USER ?= benedictmwanga
+DB_PASSWORD ?=
 DB_NAME ?= permission_test
 
 # Colors for output

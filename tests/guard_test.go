@@ -26,7 +26,7 @@ var _ = Describe("Guard", func() {
 	)
 
 	BeforeEach(func() {
-		db, cleanup = NewTestDB()
+		db, cleanup = NewTestDBPost()
 		pm = permission.NewManager(db)
 		ctx = context.Background()
 

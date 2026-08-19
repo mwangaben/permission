@@ -24,7 +24,7 @@ var _ = Describe("Permission System", func() {
 	)
 
 	BeforeEach(func() {
-		db, cleanup = NewTestDB()
+		db, cleanup = NewTestDBPost()
 		pm = permission.NewManager(db)
 	})
 

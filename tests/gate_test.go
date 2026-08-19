@@ -25,7 +25,7 @@ func TestGateTest(t *testing.T) {
 		)
 
 		BeforeEach(func() {
-			db, cleanup = NewTestDB()
+			db, cleanup = NewTestDBPost()
 			pm = permission.NewManager(db)
 			ctx = context.Background()
 
