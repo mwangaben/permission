@@ -546,6 +546,117 @@ MIT — see [LICENSE](LICENSE).
 4. Push to the branch (`git push origin feature/amazing-feature`).
 5. Open a Pull Request.
 
+## Migration from v1.0
+
+`v1.1.0` introduces a storage abstraction that supports both GORM and
+Ent backends. The public API changed in a few mechanical ways. This
+section walks through the diffs.
+
+### 1. `NewManager` returns an error
+
+```go
+// v1.0
+pm := permission.NewManager(db)
+
+// v1.1
+pm, err := permission.NewManager(db)
+if err != nil {
+	panic(err)
+}
+```
+
+The constructor can fail if it can't detect the database driver.
+
+### 2. Every method takes a `context.Context`
+
+```go
+// v1.0
+perm, err := pm.Registrar.Register("user.view", "web")
+has, err := checker.HasPermission("user", userID, "user.view", "web")
+
+// v1.1
+perm, err := pm.Registrar.Register(ctx, "user.view", "web")
+has, err := checker.HasPermission(ctx, "user", userID, "user.view", "web")
+```
+
+### 3. Constructors take `pm.Repo`, not `db`
+
+```go
+// v1.0
+checker := permission.NewChecker(db, pm.Config, pm.Tenant)
+assigner := role.NewAssigner(db)
+permManager := role.NewPermissionManager(db)
+
+// v1.1
+checker := permission.NewChecker(pm.Repo, pm.Config, pm.Tenant)
+assigner := role.NewAssigner(pm.Repo)
+permManager := role.NewPermissionManager(pm.Repo)
+```
+
+`pm.Repo` is a `storage.Repository`, so the same code works against
+GORM or Ent.
+
+### 4. Assignment methods take a tenant ID
+
+```go
+// v1.0
+assigner.AssignRoleToModel(roleID, "user", userID)
+
+// v1.1 (global scope)
+assigner.AssignRoleToModel(ctx, roleID, "user", userID, nil)
+
+// v1.1 (tenant scope)
+assigner.AssignRoleToModel(ctx, roleID, "user", userID, &tenantID)
+```
+
+### 5. `pm.DB` is gone
+
+```go
+// v1.0
+db := pm.DB
+
+// v1.1
+repo := pm.Repo
+// If you need the raw handle:
+if gormRepo, ok := pm.Repo.(*gormstore.Repository); ok {
+	db := gormRepo.DB() // you'd need to add this accessor
+}
+```
+
+For most use cases, `pm.Repo` is what you want — it's what the rest of
+the package uses internally.
+
+### 6. Pivot tables gained a surrogate primary key
+
+If you manage your own migrations:
+
+```sql
+-- v1.0
+ALTER TABLE role_has_permissions
+	DROP PRIMARY KEY,
+	ADD COLUMN id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY FIRST,
+	ADD UNIQUE INDEX idx_role_permissions_unique (permission_id, role_id);
+
+-- Same pattern for model_has_roles, model_has_permissions, tenant_user.
+```
+
+If you use `pm.Migrate(ctx)`, this is handled automatically.
+
+### 7. Package types
+
+```go
+// v1.0
+import "github.com/mwangaben/permission/models"
+var perm *models.Permission
+
+// v1.1
+import "github.com/mwangaben/permission/storage"
+var perm *storage.Permission
+```
+
+The `models` package still exists for the GORM backend, but consumers
+should use `storage.*` types for backend-agnostic code.
+
 ## Credits
 
 Inspired by [Spatie/laravel-permission](https://spatie.be/docs/laravel-permission/v8/introduction).
