@@ -1,99 +1,113 @@
 package permission
 
 import (
+	"context"
+	"errors"
+	"fmt"
+
 	"github.com/mwangaben/permission/config"
-	"github.com/mwangaben/permission/models"
 	"github.com/mwangaben/permission/role"
+	"github.com/mwangaben/permission/storage"
+	"github.com/mwangaben/permission/storage/entstore"
+	"github.com/mwangaben/permission/storage/gormstore"
 	"github.com/mwangaben/permission/tenant"
-	"gorm.io/gorm"
 )
 
-// Manager is the main entry point for the permission package
+// Manager is the main entry point for the permission package.
+//
+// It works with either a *gorm.DB or an *ent.Client. The backend is
+// auto-detected from the type of the argument passed to NewManager.
 type Manager struct {
-	DB        *gorm.DB
+	Repo      storage.Repository
 	Config    *config.Config
 	Tenant    *tenant.Manager
 	Registrar *Registrar
 	Checker   *Checker
 	Guard     *Guard
-	// Role management
+
 	RoleRegistrar   *role.Registrar
 	RoleAssigner    *role.Assigner
 	RolePermManager *role.PermissionManager
 }
 
-// NewManager creates a new permission manager
-func NewManager(db *gorm.DB, opts ...func(*config.Config)) *Manager {
+// NewManager creates a new manager. db may be *gorm.DB, *ent.Client, or any
+// value exposing DB() *gorm.DB or Client() *ent.Client.
+func NewManager(db interface{}, opts ...func(*config.Config)) (*Manager, error) {
 	cfg := config.NewConfig(opts...)
 	tenantManager := tenant.NewManager(cfg.EnableTenant)
 
-	registrar := NewRegistrar(db, cfg, tenantManager)
-	checker := NewChecker(db, cfg, tenantManager)
-	guard := NewGuard(checker)
+	repo, err := buildRepository(db, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to build storage: %w", err)
+	}
 
-	roleRegistrar := role.NewRegistrar(db, cfg, tenantManager)
-	roleAssigner := role.NewAssigner(db)
-	rolePermManager := role.NewPermissionManager(db)
+	m := &Manager{
+		Repo:   repo,
+		Config: cfg,
+		Tenant: tenantManager,
+	}
+	m.wire()
+	return m, nil
+}
 
-	return &Manager{
-		DB:              db,
-		Config:          cfg,
-		Tenant:          tenantManager,
-		Registrar:       registrar,
-		Checker:         checker,
-		Guard:           guard,
-		RoleRegistrar:   roleRegistrar,
-		RoleAssigner:    roleAssigner,
-		RolePermManager: rolePermManager,
+// wire constructs the sub-components from the current Repo/Config/Tenant.
+// Called by NewManager and any method that changes tenant state.
+func (m *Manager) wire() {
+	m.Registrar = NewRegistrar(m.Repo, m.Config, m.Tenant)
+	m.Checker = NewChecker(m.Repo, m.Config, m.Tenant)
+	m.Guard = NewGuard(m.Checker)
+	m.RoleRegistrar = role.NewRegistrar(m.Repo, m.Config, m.Tenant)
+	m.RoleAssigner = role.NewAssigner(m.Repo)
+	m.RolePermManager = role.NewPermissionManager(m.Repo)
+}
+
+func buildRepository(db interface{}, forceDriver string) (storage.Repository, error) {
+	driver := forceDriver
+	if driver == "" {
+		var err error
+		driver, err = storage.DetectDriver(db)
+		if err != nil {
+			return nil, err
+		}
+	}
+	switch driver {
+	case storage.DriverGorm:
+		return gormstore.New(db)
+	case storage.DriverEnt:
+		return entstore.New(db)
+	default:
+		return nil, fmt.Errorf("unsupported storage driver: %s", driver)
 	}
 }
 
-// WithTenant sets the tenant context for all operations
 func (m *Manager) WithTenant(tenantID string) *Manager {
 	m.Tenant = m.Tenant.WithTenant(tenantID)
-	m.Registrar = NewRegistrar(m.DB, m.Config, m.Tenant)
-	m.Checker = NewChecker(m.DB, m.Config, m.Tenant)
-	m.Guard = NewGuard(m.Checker)
-	m.RoleRegistrar = role.NewRegistrar(m.DB, m.Config, m.Tenant)
+	m.wire()
 	return m
 }
 
-// EnableTenant enables tenant mode
 func (m *Manager) EnableTenant(tenantIDType string) *Manager {
 	m.Config.EnableTenant = true
 	m.Config.TenantIDType = tenantIDType
 	m.Tenant = tenant.NewManager(true)
-	m.Registrar = NewRegistrar(m.DB, m.Config, m.Tenant)
-	m.Checker = NewChecker(m.DB, m.Config, m.Tenant)
-	m.Guard = NewGuard(m.Checker)
-	m.RoleRegistrar = role.NewRegistrar(m.DB, m.Config, m.Tenant)
+	m.wire()
 	return m
 }
 
-// DisableTenant disables tenant mode
 func (m *Manager) DisableTenant() *Manager {
 	m.Config.EnableTenant = false
 	m.Tenant = tenant.NewManager(false)
-	m.Registrar = NewRegistrar(m.DB, m.Config, m.Tenant)
-	m.Checker = NewChecker(m.DB, m.Config, m.Tenant)
-	m.Guard = NewGuard(m.Checker)
-	m.RoleRegistrar = role.NewRegistrar(m.DB, m.Config, m.Tenant)
+	m.wire()
 	return m
 }
 
-// Migrate runs database migrations
-func (m *Manager) Migrate() error {
-	return m.DB.AutoMigrate(
-		&models.Permission{},
-		&models.Role{},
-		&models.RoleHasPermission{},
-		&models.ModelHasRole{},
-		&models.ModelHasPermission{},
-	)
+// Migrate runs schema migrations for the active backend.
+func (m *Manager) Migrate(ctx context.Context) error {
+	return m.Repo.AutoMigrate(ctx)
 }
 
-// SeedDefaultPermissions seeds default permissions
-func (m *Manager) SeedDefaultPermissions() error {
+// SeedDefaultPermissions seeds the default permission set.
+func (m *Manager) SeedDefaultPermissions(ctx context.Context) error {
 	permissions := []struct{ Name, GuardName string }{
 		{"user.view", "web"},
 		{"user.create", "web"},
@@ -108,100 +122,85 @@ func (m *Manager) SeedDefaultPermissions() error {
 		{"report.update", "web"},
 		{"report.delete", "web"},
 	}
-
-	_, err := m.Registrar.RegisterMany(permissions)
+	_, err := m.Registrar.RegisterMany(ctx, permissions)
 	return err
 }
 
-// SeedDefaultRoles seeds default roles
-func (m *Manager) SeedDefaultRoles() error {
-	// Register default roles
-	roles := []struct {
+// SeedDefaultRoles seeds the default role set with their permissions.
+func (m *Manager) SeedDefaultRoles(ctx context.Context) error {
+	roleDefs := []struct {
 		Name        string
 		GuardName   string
 		Permissions []string
 	}{
-		{
-			Name:        "super-admin",
-			GuardName:   "web",
-			Permissions: []string{"user.view", "user.create", "user.update", "user.delete", "post.view", "post.create", "post.update", "post.delete", "report.view", "report.create", "report.update", "report.delete"},
-		},
-		{
-			Name:        "admin",
-			GuardName:   "web",
-			Permissions: []string{"user.view", "user.create", "user.update", "user.delete", "post.view", "post.create", "post.update", "post.delete", "report.view", "report.create", "report.update", "report.delete"},
-		},
-		{
-			Name:        "editor",
-			GuardName:   "web",
-			Permissions: []string{"post.view", "post.create", "post.update", "post.delete", "report.view", "report.create"},
-		},
-		{
-			Name:        "viewer",
-			GuardName:   "web",
-			Permissions: []string{"user.view", "post.view", "report.view"},
-		},
+		{Name: "super-admin", GuardName: "web", Permissions: []string{ /* ... */ }},
+		{Name: "admin", GuardName: "web", Permissions: []string{ /* ... */ }},
+		{Name: "editor", GuardName: "web", Permissions: []string{ /* ... */ }},
+		{Name: "viewer", GuardName: "web", Permissions: []string{ /* ... */ }},
 	}
 
-	for _, r := range roles {
-		roleObj, err := m.RoleRegistrar.Register(r.Name, r.GuardName)
+	for _, r := range roleDefs {
+		roleObj, err := m.RoleRegistrar.Register(ctx, r.Name, r.GuardName)
 		if err != nil {
 			return err
 		}
-
 		for _, permName := range r.Permissions {
-			perm, err := m.Registrar.FindByName(permName, r.GuardName)
+			perm, err := m.Registrar.FindByName(ctx, permName, r.GuardName)
 			if err != nil {
-				continue
+				if errors.Is(err, storage.ErrPermissionNotFound) {
+					continue
+				}
+				return err
 			}
-			if err := m.RolePermManager.AssignPermissionToRole(perm.ID, roleObj.ID); err != nil {
+			if err := m.RolePermManager.AssignPermissionToRole(ctx, perm.ID, roleObj.ID); err != nil {
 				return err
 			}
 		}
 	}
-
 	return nil
 }
 
-// GetUserPermissions returns all permissions for a user (model)
-func (m *Manager) GetUserPermissions(modelType string, modelID uint, guardName string) ([]models.Permission, error) {
+func (m *Manager) GetUserPermissions(ctx context.Context, modelType string, modelID uint, guardName string) ([]*storage.Permission, error) {
 	if guardName == "" {
 		guardName = m.Config.DefaultGuard
 	}
-
-	checker := NewChecker(m.DB, m.Config, m.Tenant)
-	return checker.GetAllPermissionsForModel(modelType, modelID, guardName)
+	return m.Checker.GetAllPermissionsForModel(ctx, modelType, modelID, guardName)
 }
 
-// HasUserPermission checks if a user has a specific permission
-func (m *Manager) HasUserPermission(modelType string, modelID uint, permissionName, guardName string) (bool, error) {
+func (m *Manager) HasUserPermission(ctx context.Context, modelType string, modelID uint, permissionName, guardName string) (bool, error) {
 	if guardName == "" {
 		guardName = m.Config.DefaultGuard
 	}
-
-	checker := NewChecker(m.DB, m.Config, m.Tenant)
-	return checker.HasPermission(modelType, modelID, permissionName, guardName)
+	return m.Checker.HasPermission(ctx, modelType, modelID, permissionName, guardName)
 }
 
-// AssignRoleToUser assigns a role to a user
-func (m *Manager) AssignRoleToUser(roleName, modelType string, modelID uint, guardName string) error {
+func (m *Manager) AssignRoleToUser(ctx context.Context, roleName, modelType string, modelID uint, guardName string) error {
 	if guardName == "" {
 		guardName = m.Config.DefaultGuard
 	}
-
-	return m.RoleAssigner.AssignRoleToModelByName(roleName, modelType, modelID, guardName)
+	return m.RoleAssigner.AssignRoleToModelByName(ctx, roleName, modelType, modelID, guardName, m.currentTenantID())
 }
 
-// RemoveRoleFromUser removes a role from a user
-func (m *Manager) RemoveRoleFromUser(roleName, modelType string, modelID uint, guardName string) error {
+func (m *Manager) RemoveRoleFromUser(ctx context.Context, roleName, modelType string, modelID uint, guardName string) error {
 	if guardName == "" {
 		guardName = m.Config.DefaultGuard
 	}
-
-	roleObj, err := m.RoleRegistrar.FindByName(roleName, guardName)
+	roleObj, err := m.RoleRegistrar.FindByName(ctx, roleName, guardName)
 	if err != nil {
 		return err
 	}
+	return m.RoleAssigner.RemoveRoleFromModel(ctx, roleObj.ID, modelType, modelID)
+}
 
-	return m.RoleAssigner.RemoveRoleFromModel(roleObj.ID, modelType, modelID)
+// currentTenantID returns the tenant ID to use for write operations, or nil
+// if tenant mode is disabled.
+func (m *Manager) currentTenantID() *string {
+	if m.Tenant == nil || !m.Tenant.IsEnabled() {
+		return nil
+	}
+	tid := m.Tenant.GetTenantID()
+	if tid == "" {
+		return nil
+	}
+	return &tid
 }

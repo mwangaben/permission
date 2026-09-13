@@ -2,13 +2,13 @@ package role
 
 import (
 	"github.com/mwangaben/permission/config"
+	"github.com/mwangaben/permission/storage"
 	"github.com/mwangaben/permission/tenant"
-	"gorm.io/gorm"
 )
 
-// Manager handles role operations with tenant support
+// Manager wires the role sub-components together.
 type Manager struct {
-	db          *gorm.DB
+	repo        storage.Repository
 	config      *config.Config
 	tenant      *tenant.Manager
 	Registrar   *Registrar
@@ -16,29 +16,29 @@ type Manager struct {
 	PermManager *PermissionManager
 }
 
-// NewManager creates a new role manager
-func NewManager(db *gorm.DB, config *config.Config, tenant *tenant.Manager) *Manager {
-	return &Manager{
-		db:          db,
-		config:      config,
-		tenant:      tenant,
-		Registrar:   NewRegistrar(db, config, tenant),
-		Assigner:    NewAssigner(db),
-		PermManager: NewPermissionManager(db),
+func NewManager(repo storage.Repository, config *config.Config, tenant *tenant.Manager) *Manager {
+	m := &Manager{
+		repo:   repo,
+		config: config,
+		tenant: tenant,
 	}
+	m.wire()
+	return m
 }
 
-// WithTenant sets the tenant context
-func (m *Manager) WithTenant(tenantID string) *Manager {
-	// Create a new tenant manager with the new tenant ID
-	newTenant := tenant.NewManager(m.tenant.IsEnabled()).WithTenant(tenantID)
+func (m *Manager) wire() {
+	m.Registrar = NewRegistrar(m.repo, m.config, m.tenant)
+	m.Assigner = NewAssigner(m.repo)
+	m.PermManager = NewPermissionManager(m.repo)
+}
 
-	return &Manager{
-		db:          m.db,
-		config:      m.config,
-		tenant:      newTenant,
-		Registrar:   NewRegistrar(m.db, m.config, newTenant),
-		Assigner:    m.Assigner,
-		PermManager: m.PermManager,
+func (m *Manager) WithTenant(tenantID string) *Manager {
+	newTenant := tenant.NewManager(m.tenant.IsEnabled()).WithTenant(tenantID)
+	next := &Manager{
+		repo:   m.repo,
+		config: m.config,
+		tenant: newTenant,
 	}
+	next.wire()
+	return next
 }

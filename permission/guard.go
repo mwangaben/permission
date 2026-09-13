@@ -5,28 +5,27 @@ import (
 	"fmt"
 )
 
-// Guard provides a high-level API for permission checking
+// Guard provides a high-level API for permission checking.
 type Guard struct {
 	checker *Checker
 }
 
-// NewGuard creates a new permission guard
 func NewGuard(checker *Checker) *Guard {
 	return &Guard{checker: checker}
 }
 
-// Allows checks if a model can perform an action
 func (g *Guard) Allows(ctx context.Context, modelType string, modelID uint, permission string, guardName string) (bool, error) {
-	return g.checker.HasPermission(modelType, modelID, permission, guardName)
+	return g.checker.HasPermission(ctx, modelType, modelID, permission, guardName)
 }
 
-// Denies checks if a model cannot perform an action
 func (g *Guard) Denies(ctx context.Context, modelType string, modelID uint, permission string, guardName string) (bool, error) {
 	allowed, err := g.Allows(ctx, modelType, modelID, permission, guardName)
-	return !allowed, err
+	if err != nil {
+		return false, err
+	}
+	return !allowed, nil
 }
 
-// Authorize checks if a model can perform an action and returns an error if not
 func (g *Guard) Authorize(ctx context.Context, modelType string, modelID uint, permission string, guardName string) error {
 	allowed, err := g.Allows(ctx, modelType, modelID, permission, guardName)
 	if err != nil {
@@ -38,7 +37,6 @@ func (g *Guard) Authorize(ctx context.Context, modelType string, modelID uint, p
 	return nil
 }
 
-// AuthorizeAll checks if a model has all permissions
 func (g *Guard) AuthorizeAll(ctx context.Context, modelType string, modelID uint, guardName string, permissions ...string) error {
 	for _, perm := range permissions {
 		if err := g.Authorize(ctx, modelType, modelID, perm, guardName); err != nil {
@@ -48,7 +46,6 @@ func (g *Guard) AuthorizeAll(ctx context.Context, modelType string, modelID uint
 	return nil
 }
 
-// AuthorizeAny checks if a model has any of the permissions
 func (g *Guard) AuthorizeAny(ctx context.Context, modelType string, modelID uint, guardName string, permissions ...string) error {
 	for _, perm := range permissions {
 		allowed, err := g.Allows(ctx, modelType, modelID, perm, guardName)

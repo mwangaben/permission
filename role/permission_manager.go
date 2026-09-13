@@ -1,174 +1,92 @@
 package role
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
-	"github.com/mwangaben/permission/models"
-	"gorm.io/gorm"
+	"github.com/mwangaben/permission/storage"
 )
 
-// PermissionManager handles assigning permissions to roles
+// PermissionManager handles assigning permissions to roles.
 type PermissionManager struct {
-	db *gorm.DB
+	repo storage.Repository
 }
 
-// NewPermissionManager creates a new permission manager
-func NewPermissionManager(db *gorm.DB) *PermissionManager {
-	return &PermissionManager{db: db}
+func NewPermissionManager(repo storage.Repository) *PermissionManager {
+	return &PermissionManager{repo: repo}
 }
 
-// AssignPermissionToRole assigns a permission to a role
-func (pm *PermissionManager) AssignPermissionToRole(permissionID, roleID uint) error {
-	var count int64
-	pm.db.Model(&models.RoleHasPermission{}).
-		Where("permission_id = ? AND role_id = ?", permissionID, roleID).
-		Count(&count)
-
-	if count > 0 {
-		return nil
-	}
-
-	roleHasPermission := models.RoleHasPermission{
-		PermissionID: permissionID,
-		RoleID:       roleID,
-	}
-
-	return pm.db.Create(&roleHasPermission).Error
+// AssignPermissionToRole links a permission to a role.
+//
+// The repository enforces the strict cross-tenant rule.
+func (pm *PermissionManager) AssignPermissionToRole(ctx context.Context, permissionID, roleID uint) error {
+	return pm.repo.AssignPermissionToRole(ctx, permissionID, roleID)
 }
 
-// AssignPermissionToRoleByName assigns a permission to a role by name
-func (pm *PermissionManager) AssignPermissionToRoleByName(permissionName, roleName, guardName string) error {
+// AssignPermissionToRoleByName looks up both entities by name and links them.
+func (pm *PermissionManager) AssignPermissionToRoleByName(ctx context.Context, permissionName, roleName, guardName string, tenantID *string) error {
 	if guardName == "" {
 		guardName = "web"
 	}
-
-	var permission models.Permission
-	if err := pm.db.Where("name = ? AND guard_name = ?", permissionName, guardName).First(&permission).Error; err != nil {
-		return fmt.Errorf("permission not found: %w", err)
-	}
-
-	var role models.Role
-	if err := pm.db.Where("name = ? AND guard_name = ?", roleName, guardName).First(&role).Error; err != nil {
-		return fmt.Errorf("role not found: %w", err)
-	}
-
-	return pm.AssignPermissionToRole(permission.ID, role.ID)
-}
-
-// RemovePermissionFromRole removes a permission from a role
-func (pm *PermissionManager) RemovePermissionFromRole(permissionID, roleID uint) error {
-	return pm.db.Where("permission_id = ? AND role_id = ?", permissionID, roleID).
-		Delete(&models.RoleHasPermission{}).Error
-}
-
-// RemovePermissionFromRoleByName removes a permission from a role by name
-func (pm *PermissionManager) RemovePermissionFromRoleByName(permissionName, roleName, guardName string) error {
-	if guardName == "" {
-		guardName = "web"
-	}
-
-	var permission models.Permission
-	if err := pm.db.Where("name = ? AND guard_name = ?", permissionName, guardName).First(&permission).Error; err != nil {
-		return fmt.Errorf("permission not found: %w", err)
-	}
-
-	var role models.Role
-	if err := pm.db.Where("name = ? AND guard_name = ?", roleName, guardName).First(&role).Error; err != nil {
-		return fmt.Errorf("role not found: %w", err)
-	}
-
-	return pm.RemovePermissionFromRole(permission.ID, role.ID)
-}
-
-// GetPermissionsForRole returns all permissions for a role
-func (pm *PermissionManager) GetPermissionsForRole(roleID uint) ([]models.Permission, error) {
-	var permissions []models.Permission
-
-	err := pm.db.Table("permissions").
-		Joins("JOIN role_has_permissions ON role_has_permissions.permission_id = permissions.id").
-		Where("role_has_permissions.role_id = ?", roleID).
-		Find(&permissions).Error
-
-	return permissions, err
-}
-
-// GetPermissionsForRoleWithTenant returns all permissions for a role with tenant scoping
-func (pm *PermissionManager) GetPermissionsForRoleWithTenant(roleID uint, tenantID *string) ([]models.Permission, error) {
-	var permissions []models.Permission
-
-	query := pm.db.Table("permissions").
-		Joins("JOIN role_has_permissions ON role_has_permissions.permission_id = permissions.id").
-		Where("role_has_permissions.role_id = ?", roleID)
-
-	if tenantID != nil && *tenantID != "" {
-		query = query.Where("(permissions.tenant_id = ? OR permissions.tenant_id IS NULL)", *tenantID)
-		query = query.Where("(role_has_permissions.tenant_id = ? OR role_has_permissions.tenant_id IS NULL)", *tenantID)
-	}
-
-	err := query.Find(&permissions).Error
-	return permissions, err
-}
-
-// HasPermissionForRole checks if a role has a specific permission
-func (pm *PermissionManager) HasPermissionForRole(roleID uint, permissionName string, tenantID *string) (bool, error) {
-	var count int64
-
-	query := pm.db.Table("role_has_permissions").
-		Joins("JOIN permissions ON permissions.id = role_has_permissions.permission_id").
-		Where("role_has_permissions.role_id = ? AND permissions.name = ?", roleID, permissionName)
-
-	if tenantID != nil && *tenantID != "" {
-		query = query.Where("(permissions.tenant_id = ? OR permissions.tenant_id IS NULL)", *tenantID)
-		query = query.Where("(role_has_permissions.tenant_id = ? OR role_has_permissions.tenant_id IS NULL)", *tenantID)
-	}
-
-	err := query.Count(&count).Error
-	return count > 0, err
-}
-
-// GetRolesWithPermission returns all roles that have a specific permission
-func (pm *PermissionManager) GetRolesWithPermission(permissionName string, tenantID *string) ([]models.Role, error) {
-	var roles []models.Role
-
-	query := pm.db.Table("roles").
-		Joins("JOIN role_has_permissions ON role_has_permissions.role_id = roles.id").
-		Joins("JOIN permissions ON permissions.id = role_has_permissions.permission_id").
-		Where("permissions.name = ?", permissionName)
-
-	if tenantID != nil && *tenantID != "" {
-		query = query.Where("(roles.tenant_id = ? OR roles.tenant_id IS NULL)", *tenantID)
-		query = query.Where("(permissions.tenant_id = ? OR permissions.tenant_id IS NULL)", *tenantID)
-		query = query.Where("(role_has_permissions.tenant_id = ? OR role_has_permissions.tenant_id IS NULL)", *tenantID)
-	}
-
-	err := query.Find(&roles).Error
-	return roles, err
-}
-
-// SyncPermissionsForRole syncs permissions for a role
-func (pm *PermissionManager) SyncPermissionsForRole(roleID uint, permissionIDs []uint) error {
-	tx := pm.db.Begin()
-
-	if err := tx.Where("role_id = ?", roleID).Delete(&models.RoleHasPermission{}).Error; err != nil {
-		tx.Rollback()
+	perm, err := pm.repo.FindPermissionByName(ctx, permissionName, guardName, tenantID)
+	if err != nil {
+		if errors.Is(err, storage.ErrPermissionNotFound) {
+			return fmt.Errorf("permission not found: %w", err)
+		}
 		return err
 	}
-
-	for _, permissionID := range permissionIDs {
-		roleHasPermission := models.RoleHasPermission{
-			PermissionID: permissionID,
-			RoleID:       roleID,
+	rl, err := pm.repo.FindRoleByName(ctx, roleName, guardName, tenantID)
+	if err != nil {
+		if errors.Is(err, storage.ErrRoleNotFound) {
+			return fmt.Errorf("role not found: %w", err)
 		}
-		if err := tx.Create(&roleHasPermission).Error; err != nil {
-			tx.Rollback()
-			return err
-		}
+		return err
 	}
-
-	return tx.Commit().Error
+	return pm.repo.AssignPermissionToRole(ctx, perm.ID, rl.ID)
 }
 
-// RevokeAllPermissionsForRole removes all permissions from a role
-func (pm *PermissionManager) RevokeAllPermissionsForRole(roleID uint) error {
-	return pm.db.Where("role_id = ?", roleID).Delete(&models.RoleHasPermission{}).Error
+func (pm *PermissionManager) RemovePermissionFromRole(ctx context.Context, permissionID, roleID uint) error {
+	return pm.repo.RemovePermissionFromRole(ctx, permissionID, roleID)
+}
+
+func (pm *PermissionManager) RemovePermissionFromRoleByName(ctx context.Context, permissionName, roleName, guardName string, tenantID *string) error {
+	if guardName == "" {
+		guardName = "web"
+	}
+	perm, err := pm.repo.FindPermissionByName(ctx, permissionName, guardName, tenantID)
+	if err != nil {
+		return err
+	}
+	rl, err := pm.repo.FindRoleByName(ctx, roleName, guardName, tenantID)
+	if err != nil {
+		return err
+	}
+	return pm.repo.RemovePermissionFromRole(ctx, perm.ID, rl.ID)
+}
+
+func (pm *PermissionManager) GetPermissionsForRole(ctx context.Context, roleID uint) ([]*storage.Permission, error) {
+	return pm.repo.GetPermissionsForRole(ctx, roleID)
+}
+
+// HasPermissionForRole reports whether a role has a permission matching
+// (name, guard) under the current tenant scope.
+//
+// This is a targeted existence check at the repository level; it does not
+// load the role's full permission set.
+func (pm *PermissionManager) HasPermissionForRole(ctx context.Context, roleID uint, permissionName, guardName string, tenantID *string) (bool, error) {
+	if guardName == "" {
+		guardName = "web"
+	}
+	return pm.repo.RolePermissionExists(ctx, roleID, permissionName, guardName, tenantID)
+}
+
+// SyncPermissionsForRole atomically replaces the set of permissions for a role.
+func (pm *PermissionManager) SyncPermissionsForRole(ctx context.Context, roleID uint, permissionIDs []uint) error {
+	return pm.repo.SyncPermissionsForRole(ctx, roleID, permissionIDs)
+}
+
+// RevokeAllPermissionsForRole removes every permission from a role.
+func (pm *PermissionManager) RevokeAllPermissionsForRole(ctx context.Context, roleID uint) error {
+	return pm.repo.RevokeAllPermissionsForRole(ctx, roleID)
 }

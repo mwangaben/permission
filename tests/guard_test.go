@@ -2,8 +2,6 @@ package tests
 
 import (
 	"context"
-	"testing"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -11,11 +9,6 @@ import (
 	"github.com/mwangaben/permission/role"
 	"gorm.io/gorm"
 )
-
-func TestGuard(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Guard Suite")
-}
 
 var _ = Describe("Guard", func() {
 	var (
@@ -26,31 +19,30 @@ var _ = Describe("Guard", func() {
 	)
 
 	BeforeEach(func() {
-		db, cleanup = NewTestDBPost()
-		pm = permission.NewManager(db)
 		ctx = context.Background()
+		db, cleanup = NewTestDBPost()
 
-		// Register permissions
-		perm1, err := pm.Registrar.Register("user.view", "web")
-		Expect(err).ToNot(HaveOccurred())
-		perm2, err := pm.Registrar.Register("user.edit", "web")
-		Expect(err).ToNot(HaveOccurred())
-
-		// Create role
-		roleManager := role.NewManager(db, pm.Config, pm.Tenant)
-		roleObj, err := roleManager.Registrar.Register("editor", "web")
+		var err error
+		pm, err = permission.NewManager(db)
 		Expect(err).ToNot(HaveOccurred())
 
-		// Assign permissions to role
-		permManager := role.NewPermissionManager(db)
-		err = permManager.AssignPermissionToRole(perm1.ID, roleObj.ID)
+		perm1, err := pm.Registrar.Register(ctx, "user.view", "web")
 		Expect(err).ToNot(HaveOccurred())
-		err = permManager.AssignPermissionToRole(perm2.ID, roleObj.ID)
+		perm2, err := pm.Registrar.Register(ctx, "user.edit", "web")
 		Expect(err).ToNot(HaveOccurred())
 
-		// Assign role to user
-		assigner := role.NewAssigner(db)
-		err = assigner.AssignRoleToModel(roleObj.ID, "user", 1)
+		roleManager := role.NewManager(pm.Repo, pm.Config, pm.Tenant)
+		roleObj, err := roleManager.Registrar.Register(ctx, "editor", "web")
+		Expect(err).ToNot(HaveOccurred())
+
+		permManager := role.NewPermissionManager(pm.Repo)
+		err = permManager.AssignPermissionToRole(ctx, perm1.ID, roleObj.ID)
+		Expect(err).ToNot(HaveOccurred())
+		err = permManager.AssignPermissionToRole(ctx, perm2.ID, roleObj.ID)
+		Expect(err).ToNot(HaveOccurred())
+
+		assigner := role.NewAssigner(pm.Repo)
+		err = assigner.AssignRoleToModel(ctx, roleObj.ID, "user", 1, nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -64,7 +56,7 @@ var _ = Describe("Guard", func() {
 		var guard *permission.Guard
 
 		BeforeEach(func() {
-			checker := permission.NewChecker(db, pm.Config, pm.Tenant)
+			checker := permission.NewChecker(pm.Repo, pm.Config, pm.Tenant)
 			guard = permission.NewGuard(checker)
 		})
 

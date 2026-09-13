@@ -1,19 +1,19 @@
 package models
 
-// ModelHasPermission represents the polymorphic relationship between models and permissions
+// ModelHasPermission represents the polymorphic relationship between models
+// and permissions (direct assignment).
 type ModelHasPermission struct {
-	PermissionID uint    `gorm:"primaryKey" json:"permission_id"`
-	ModelType    string  `gorm:"type:varchar(255);primaryKey" json:"model_type"`
-	ModelID      uint    `gorm:"primaryKey" json:"model_id"`
-	TenantID     *string `gorm:"type:varchar(100);index:idx_model_permissions_tenant" json:"tenant_id,omitempty"` // Optional tenant
+	ID           uint    `gorm:"primaryKey" json:"id"`
+	PermissionID uint    `gorm:"uniqueIndex:idx_model_permissions_unique" json:"permission_id"`
+	ModelType    string  `gorm:"type:varchar(255);uniqueIndex:idx_model_permissions_unique" json:"model_type"`
+	ModelID      uint    `gorm:"uniqueIndex:idx_model_permissions_unique" json:"model_id"`
+	TenantID     *string `gorm:"type:varchar(100);index:idx_model_permissions_tenant" json:"tenant_id,omitempty"`
 }
 
-// TableName specifies the table name
 func (ModelHasPermission) TableName() string {
 	return "model_has_permissions"
 }
 
-// IsTenantScoped checks if the relationship is tenant-scoped
 func (m *ModelHasPermission) IsTenantScoped() bool {
 	return m.TenantID != nil && *m.TenantID != ""
 }

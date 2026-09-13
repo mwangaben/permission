@@ -1,7 +1,7 @@
 package middleware
 
 import (
-	"context"
+	_ "context"
 	"net/http"
 
 	"github.com/mwangaben/permission/gate"
